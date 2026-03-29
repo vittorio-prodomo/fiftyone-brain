@@ -40,7 +40,7 @@ setup(
     license="Apache",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    packages=["fiftyone.brain"],
+    packages=["fiftyone", "fiftyone.brain"],
     include_package_data=True,
     install_requires=["numpy", "scipy>=1.2.0", "scikit-learn"],
     classifiers=[

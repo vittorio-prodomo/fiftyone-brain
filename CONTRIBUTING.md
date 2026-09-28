@@ -1,7 +1,7 @@
 # Contributing to FiftyOne Brain
 
 All Brain contributions should follow the practices established in
-[FiftyOne](https://github.com/voxel51/fiftyone/blob/develop/CONTRIBUTING.md).
+[FiftyOne](https://github.com/voxel51/fiftyone/blob/main/CONTRIBUTING.md).
 
 ## Adding new public methods to the Brain package
 
@@ -22,7 +22,7 @@ fobh.compute_hardness(...)
 ```
 
 To achieve this, follow the existing pattern of declaring new public methods in
-[`fiftyone/brain/__init__.py`](https://github.com/voxel51/fiftyone-brain/blob/develop/fiftyone/brain/__init__.py).
+[`fiftyone/brain/__init__.py`](https://github.com/voxel51/fiftyone-brain/blob/main/fiftyone/brain/__init__.py).
 
 Be sure to include a detailed docstring for all methods in this file, as they
 are pulled in by FiftyOne documentation builds and are made available in the

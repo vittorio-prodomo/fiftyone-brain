@@ -3,44 +3,65 @@ name: Build
 on:
   pull_request:
     branches:
-      - develop
+      - main
     types: [opened, synchronize]
   push:
     branches:
-      - develop
+      - main
     tags:
       - v*
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Clone fiftyone-brain
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+      - name: Install ruff
+        run: pip install ruff==0.16.0
+      - name: Check Python correctness
+        run: ruff check --output-format=github .
+
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Clone fiftyone-brain
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: true
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
-          python-version: 3.9
+          python-version: "3.10"
       - name: Check Python version
         run: |
           python --version
           pip --version
       - name: Install dependencies
         run: |
-          pip install --upgrade pip setuptools wheel
-          pip install -r requirements/build.txt
-      - name: Set environment
+          pip install --upgrade pip
+          pip install build
+      - name: Check release version
         env:
           RELEASE_TAG: ${{ github.ref }}
         run: |
-          if [[ $RELEASE_TAG =~ ^refs\/tags\/v.* ]]; then
-             echo "RELEASE_VERSION=$(echo '${{ github.ref }}' | sed 's/^refs\/tags\/v//')" >> $GITHUB_ENV
+          # A tag must match the VERSION file exactly, including any .devN or
+          # rcN suffix
+          version=$(tr -d '\r\n' < VERSION)
+          if [[ "$RELEASE_TAG" == refs/tags/v* ]] &&
+            [ "${RELEASE_TAG#refs/tags/v}" != "$version" ]; then
+            echo "::error::Tag ${RELEASE_TAG#refs/tags/} does not match VERSION $version"
+            exit 1
           fi
+          echo "Building fiftyone-brain $version"
       - name: Build wheel
         run: |
-          python setup.py sdist bdist_wheel
+          python -m build
       - name: Upload wheel
         uses: actions/upload-artifact@v7
         with:
@@ -62,30 +83,32 @@ jobs:
       fail-fast: false
       matrix:
         python:
-          - "3.9"
           - "3.10"
           - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
     steps:
       - name: Clone fiftyone-brain
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: true
       - name: Clone fiftyone
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
           path: fiftyone-src
-          ref: develop
+          ref: main
           repository: voxel51/fiftyone
       - name: Clone voxel51-eta
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         if: ${{ !startsWith(github.ref, 'refs/heads/rel') && !startsWith(github.ref, 'refs/tags/') }}
         with:
           fetch-depth: 1
           path: eta
-          ref: develop
+          ref: main
           repository: voxel51/eta
-      # ETA tests will create a storage client which, 
+      # ETA tests will create a storage client which,
       # in it's __init__, tries to log in to GCP.
       # See tests/tests_uniqueness.py
       - name: Authenticate to Google Cloud
@@ -97,14 +120,14 @@ jobs:
       - name: Set Up Cloud SDK
         uses: google-github-actions/setup-gcloud@v3
       - name: Set up Python ${{ matrix.python }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - name: Free Disk Space (Ubuntu) # standard runner's 14 GB available disk size isn't enough. Need at least 22 GB free.
         uses: jlumbroso/free-disk-space@v1.3.1
       - name: Install dependencies
         run: |
-          pip install --upgrade pip setuptools wheel
+          pip install --upgrade pip build
       - name: Download fiftyone-brain wheel
         uses: actions/download-artifact@v8
         with:
@@ -113,7 +136,7 @@ jobs:
       - name: Install fiftyone
         working-directory: fiftyone-src
         run: |
-          python setup.py bdist_wheel
+          python -m build --wheel
           pip install voxel51-eta[storage] fiftyone-db
           pip install ./dist/*.whl
       - name: Install ETA from source
@@ -123,21 +146,29 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/heads/rel') && !startsWith(github.ref, 'refs/tags/') }}
         run: |
           echo "Installing ETA from source because github.ref = ${{ github.ref }} (not a release)"
-          python setup.py bdist_wheel
+          python -m build --wheel
           pip install ./dist/*.whl --force-reinstall
       - name: Reinstall fiftyone-brain
         run: |
           pip install --force-reinstall --no-deps dist/*.whl
       - name: Install test dependencies
         run: |
-          pip install imageio pytest torch torchvision
+          pip install imageio pytest torch torchvision lancedb
       - name: Cache Zoo
         id: fiftyone-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             .fiftyone
+          # What is cached are the zoo datasets and models the tests ask
+          # for, but the key changes whenever any test file does -- so an
+          # edit anywhere under tests/ used to re-download CIFAR-10 and a
+          # model on every matrix leg. The prefix restores the newest cache
+          # whatever the hash, and a fresh one is still saved under the new
+          # key, so an added asset is picked up without paying for the rest
           key: zoo-${{ hashFiles('tests/**') }}
+          restore-keys: |
+            zoo-
       - name: Run tests
         run: |
           pytest --verbose tests/ --ignore tests/intensive/
@@ -162,4 +193,52 @@ jobs:
       # See
       # [fiftyone-brain](https://pypi.org/manage/project/fiftyone-brain/settings/publishing/)
       - name: Publish
-        uses: pypa/gh-action-pypi-publish@v1.13.0
+        uses: pypa/gh-action-pypi-publish@v1.14.2
+
+  bump:
+    needs: [publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Find the next version
+        id: next
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version=${RELEASE_TAG#v}
+          if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.dev([0-9]+)$ ]]; then
+            branch=main
+            next="${BASH_REMATCH[1]}.dev$((BASH_REMATCH[2] + 1))"
+          elif [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)rc([0-9]+)$ ]]; then
+            branch="release/v${BASH_REMATCH[1]}"
+            next="${BASH_REMATCH[1]}rc$((BASH_REMATCH[2] + 1))"
+          else
+            echo "$version is a final release; nothing to bump"
+            exit 0
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+      - name: Clone fiftyone-brain
+        if: steps.next.outputs.next
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.next.outputs.branch }}
+          # voxel51-bot bypasses branch protection on main and release/v*
+          token: ${{ secrets.FIFTYONE_GITHUB_TOKEN }}
+      - name: Commit the next version
+        if: steps.next.outputs.next
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+          NEXT: ${{ steps.next.outputs.next }}
+        run: |
+          if [ "$(tr -d '\r\n' < VERSION)" != "$VERSION" ]; then
+            echo "::notice::VERSION moved past $VERSION; nothing to bump"
+            exit 0
+          fi
+          printf '%s\n' "$NEXT" > VERSION
+          git config user.name "voxel51-bot"
+          git config user.email "voxel51-bot@users.noreply.github.com"
+          git commit -am "chore: bump VERSION to $NEXT"
+          git push
